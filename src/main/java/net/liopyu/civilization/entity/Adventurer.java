@@ -18,6 +18,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.tags.BlockTags;
+import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.*;
 import net.minecraft.world.damagesource.DamageSource;
@@ -48,8 +49,9 @@ public class Adventurer extends PathfinderMob {
             SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.COMPOUND_TAG);
     private static final EntityDataAccessor<java.util.Optional<BlockPos>> HOME_POS =
             SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.OPTIONAL_BLOCK_POS);
-    private static final EntityDataAccessor<java.util.Optional<BlockPos>> HOME_TABLE_POS =
-            SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.OPTIONAL_BLOCK_POS);
+
+    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> ACTION_MODE =
+            net.minecraft.network.syncher.SynchedEntityData.defineId(Adventurer.class, net.minecraft.network.syncher.EntityDataSerializers.INT);
 
     @Override
     protected void defineSynchedData(SynchedEntityData.Builder builder) {
@@ -57,23 +59,18 @@ public class Adventurer extends PathfinderMob {
         builder.define(USERNAME, "");
         builder.define(INV_TAG, new CompoundTag());
         builder.define(HOME_POS, java.util.Optional.empty());
-        builder.define(HOME_TABLE_POS, java.util.Optional.empty());
+        builder.define(ACTION_MODE, net.liopyu.civilization.ai.ActionMode.IDLE.ordinal());
     }
 
-    public boolean hasHomeTable() {
-        return entityData.get(HOME_TABLE_POS).isPresent();
+    public net.liopyu.civilization.ai.ActionMode getActionMode() {
+        int v = this.entityData.get(ACTION_MODE);
+        net.liopyu.civilization.ai.ActionMode[] vals = net.liopyu.civilization.ai.ActionMode.values();
+        if (v < 0 || v >= vals.length) return net.liopyu.civilization.ai.ActionMode.IDLE;
+        return vals[v];
     }
 
-    public java.util.Optional<BlockPos> getHomeTablePos() {
-        return entityData.get(HOME_TABLE_POS);
-    }
-
-    public void setHomeTablePos(BlockPos p) {
-        entityData.set(HOME_TABLE_POS, java.util.Optional.of(p.immutable()));
-    }
-
-    public void clearHomeTable() {
-        entityData.set(HOME_TABLE_POS, java.util.Optional.empty());
+    public void setActionMode(net.liopyu.civilization.ai.ActionMode m) {
+        this.entityData.set(ACTION_MODE, m.ordinal());
     }
 
     private static final int INV_SIZE = 27;
@@ -137,7 +134,6 @@ public class Adventurer extends PathfinderMob {
         tag.putString("AdventurerName", getUsername());
         tag.put("Inv", entityData.get(INV_TAG).copy());
         getHomePos().ifPresent(p -> tag.putLong("Home", p.asLong()));
-        getHomeTablePos().ifPresent(p -> tag.putLong("HomeTable", p.asLong()));
     }
 
     @Override
@@ -148,7 +144,6 @@ public class Adventurer extends PathfinderMob {
             entityData.set(INV_TAG, tag.getCompound("Inv").copy());
         }
         if (tag.contains("Home")) setHomePos(BlockPos.of(tag.getLong("Home")));
-        if (tag.contains("HomeTable")) setHomeTablePos(BlockPos.of(tag.getLong("HomeTable")));
     }
 
     @Override
@@ -257,9 +252,45 @@ public class Adventurer extends PathfinderMob {
     }
 
     @Override
+    protected void dropCustomDeathLoot(ServerLevel level, DamageSource damageSource, boolean recentlyHit) {
+        super.dropCustomDeathLoot(level, damageSource, recentlyHit);
+        NonNullList<ItemStack> inv = getInternalInventory();
+        for (ItemStack s : inv) {
+            if (!s.isEmpty())
+                level.addFreshEntity(new net.minecraft.world.entity.item.ItemEntity(level, getX(), getY(), getZ(), s.copy()));
+        }
+        setInternalInventory(NonNullList.withSize(27, ItemStack.EMPTY));
+    }
+
+    @Override
+    public float getAttackAnim(float partialTicks) {
+        if (!this.swinging) return 0.0F;
+        int dur = this.getCurrentSwingDuration();
+        float t = (this.swingTime + partialTicks) / (float) dur;
+        return Mth.clamp(t, 0.0F, 1.0F);
+    }
+
+    @Override
+    public void aiStep() {
+        super.aiStep();
+
+        if (this.swinging) {
+            ++this.swingTime;
+            if (this.swingTime >= this.getCurrentSwingDuration()) {
+                this.swinging = false;
+                this.swingTime = 0;
+            }
+        }
+    }
+
+    @Override
     protected void registerGoals() {
+        this.goalSelector.addGoal(0, new AutoEquipGoal(this));
+        this.goalSelector.addGoal(1, new MineBlockGoal(this));
         this.goalSelector.addGoal(2, new SetUpBaseGoal(this, 1.0D, 8));
-        this.goalSelector.addGoal(3, new GatherResourcesGoal(this, 1.0D));
+        this.goalSelector.addGoal(0, new ManageActionsGoal(this));
+        this.goalSelector.addGoal(4, new NavigateToNearestTreeGoal(this, 1.1));
+        this.goalSelector.addGoal(5, new CutTreeGoal(this, 256));
     }
 
 

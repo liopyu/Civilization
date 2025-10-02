@@ -27,6 +27,7 @@ public final class AdventurerSkins {
         return resolve(username).model() == PlayerSkin.Model.SLIM;
     }
 
+
     private static PlayerSkin resolve(String username) {
         if (username == null || username.isEmpty()) {
             return DefaultPlayerSkin.get(defaultUuid("default"));

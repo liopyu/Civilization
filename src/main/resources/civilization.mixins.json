@@ -4,6 +4,7 @@
   "package": "net.liopyu.civilization.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "BlockBehaviourAccessor"
   ],
   "client": [
   ],
