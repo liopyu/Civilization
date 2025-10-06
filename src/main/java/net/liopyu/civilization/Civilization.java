@@ -44,7 +44,7 @@ public class Civilization {
         ModEntities.register(modEventBus);
         ModItems.register(modEventBus);
         ModMenus.register(modEventBus);
-
+        net.liopyu.civilization.ai.brain.AdventurerMemories.MEMORIES.register(modEventBus);
     }
 
 }

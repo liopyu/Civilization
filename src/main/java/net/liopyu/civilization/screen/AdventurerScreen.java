@@ -7,23 +7,30 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Inventory;
 
 public class AdventurerScreen extends AbstractContainerScreen<AdventurerMenu> {
-    // Vanilla generic 9x? background; top 166px is the 9x3 layout
     private static final ResourceLocation BG = ResourceLocation.withDefaultNamespace("textures/gui/container/generic_54.png");
 
     public AdventurerScreen(AdventurerMenu menu, Inventory inv, Component title) {
         super(menu, inv, title);
-        this.imageWidth = 176;   // standard width
-        this.imageHeight = 166;  // 9x3 container height
-        this.inventoryLabelY = this.imageHeight - 94; // vanilla offset
+        int rows = 3;
+        this.imageWidth = 176;
+        this.imageHeight = 114 + rows * 18;
+        this.inventoryLabelY = this.imageHeight - 94;
     }
+
 
     @Override
     protected void renderBg(GuiGraphics g, float partialTick, int mouseX, int mouseY) {
         int x = (this.width - this.imageWidth) / 2;
         int y = (this.height - this.imageHeight) / 2;
-        // Draw vanilla 9x3 background region
-        g.blit(BG, x, y, 0, 0, this.imageWidth, this.imageHeight);
+        int rows = 3;
+
+        int topHeight = 17 + rows * 18;
+        g.blit(BG, x, y, 0, 0, this.imageWidth, topHeight);
+
+        int invY = y + topHeight;
+        g.blit(BG, x, invY, 0, 126, this.imageWidth, 96);
     }
+
 
     @Override
     protected void renderLabels(GuiGraphics g, int mouseX, int mouseY) {

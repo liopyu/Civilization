@@ -1,12 +1,9 @@
 package net.liopyu.civilization.ai.goal;
 
-import net.liopyu.civilization.ai.ActionMode;
-import net.liopyu.civilization.ai.util.AiUtil;
 import net.liopyu.civilization.entity.Adventurer;
-import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.ai.goal.Goal;
 
-import java.util.EnumSet;
+import static net.liopyu.civilization.ai.util.AiUtil.aiLogger;
 
 public class ManageActionsGoal extends Goal {
     private final Adventurer mob;
@@ -29,7 +26,14 @@ public class ManageActionsGoal extends Goal {
 
     @Override
     public void start() {
+        aiLogger("Start: ManageActionsGoal");
         cooldown = 0;
+    }
+
+    @Override
+    public void stop() {
+        super.stop();
+        aiLogger("Stop: ManageActionsGoal");
     }
 
     @Override
@@ -41,7 +45,7 @@ public class ManageActionsGoal extends Goal {
         var mode = mob.getActionMode();
 
         if (mode == net.liopyu.civilization.ai.ActionMode.IDLE) {
-            var log = net.liopyu.civilization.ai.util.AiUtil.findNearestLogAvoidingOthers(mob, 10, 6.0);
+            var log = net.liopyu.civilization.ai.util.AiUtil.findNearestLogAvoidingOthers(mob, 24, 6.0);
             if (log != null) {
                 mob.setActionMode(net.liopyu.civilization.ai.ActionMode.NAVIGATING_TO_NEAREST_TREE);
                 cooldown = 10;
@@ -50,7 +54,7 @@ public class ManageActionsGoal extends Goal {
         }
 
         if (mode == net.liopyu.civilization.ai.ActionMode.NAVIGATING_TO_NEAREST_TREE) {
-            var log = net.liopyu.civilization.ai.util.AiUtil.findNearestLogAvoidingOthers(mob, 10, 6.0);
+            var log = net.liopyu.civilization.ai.util.AiUtil.findNearestLogAvoidingOthers(mob, 24, 6.0);
             if (log == null) {
                 mob.setActionMode(net.liopyu.civilization.ai.ActionMode.IDLE);
                 cooldown = 10;

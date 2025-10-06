@@ -50,7 +50,7 @@ public class SetUpBaseGoal extends Goal {
 
     @Override
     public void tick() {
-        if (target == null) return;
+        if (target == null/* || isBusy()*/) return;
         if (mob.blockPosition().closerThan(target, 2.0)) {
             if (mob.level().isEmptyBlock(target) && mob.level().getBlockState(target.below()).isSolid()) {
                 mob.level().setBlock(target, Blocks.CHEST.defaultBlockState(), 3);

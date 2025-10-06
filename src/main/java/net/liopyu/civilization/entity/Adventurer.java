@@ -1,6 +1,8 @@
 package net.liopyu.civilization.entity;
 
 
+import net.liopyu.civilization.ai.brain.AdventurerAi;
+import net.liopyu.civilization.ai.brain.AdventurerMemories;
 import net.liopyu.civilization.ai.goal.*;
 import net.liopyu.civilization.screen.AdventurerMenu;
 import net.liopyu.civilization.util.UsernamePool;
@@ -8,7 +10,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.NonNullList;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.syncher.EntityDataAccessor;
@@ -26,20 +27,21 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.SpawnGroupData;
+import net.minecraft.world.entity.ai.Brain;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.entity.ai.goal.*;
 import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
 import net.minecraft.world.entity.ai.util.DefaultRandomPos;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ServerLevelAccessor;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.CommonHooks;
 
 import javax.annotation.Nullable;
+import java.util.Optional;
 import java.util.UUID;
 
 public class Adventurer extends PathfinderMob {
@@ -49,7 +51,8 @@ public class Adventurer extends PathfinderMob {
             SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.COMPOUND_TAG);
     private static final EntityDataAccessor<java.util.Optional<BlockPos>> HOME_POS =
             SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.OPTIONAL_BLOCK_POS);
-
+    public static final EntityDataAccessor<java.util.Optional<BlockPos>> MINING_TARGET_POS =
+            SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.OPTIONAL_BLOCK_POS);
     private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> ACTION_MODE =
             net.minecraft.network.syncher.SynchedEntityData.defineId(Adventurer.class, net.minecraft.network.syncher.EntityDataSerializers.INT);
 
@@ -59,6 +62,7 @@ public class Adventurer extends PathfinderMob {
         builder.define(USERNAME, "");
         builder.define(INV_TAG, new CompoundTag());
         builder.define(HOME_POS, java.util.Optional.empty());
+        builder.define(MINING_TARGET_POS, java.util.Optional.empty());
         builder.define(ACTION_MODE, net.liopyu.civilization.ai.ActionMode.IDLE.ordinal());
     }
 
@@ -71,6 +75,14 @@ public class Adventurer extends PathfinderMob {
 
     public void setActionMode(net.liopyu.civilization.ai.ActionMode m) {
         this.entityData.set(ACTION_MODE, m.ordinal());
+        if (!level().isClientSide) {
+            var brain = this.getBrain();
+            if (m == net.liopyu.civilization.ai.ActionMode.IDLE) {
+                brain.eraseMemory(net.liopyu.civilization.ai.brain.AdventurerMemories.MODE_ACTIVITY.get());
+            } else {
+                brain.setMemory(net.liopyu.civilization.ai.brain.AdventurerMemories.MODE_ACTIVITY.get(), m);
+            }
+        }
     }
 
     private static final int INV_SIZE = 27;
@@ -86,7 +98,6 @@ public class Adventurer extends PathfinderMob {
 
     public void setInternalInventory(NonNullList<ItemStack> list) {
         CompoundTag out = new CompoundTag();
-        // ORDER: provider, tag, list, alwaysWrite
         ContainerHelper.saveAllItems(out, list, true, registries());
         entityData.set(INV_TAG, out);
     }
@@ -134,6 +145,11 @@ public class Adventurer extends PathfinderMob {
         tag.putString("AdventurerName", getUsername());
         tag.put("Inv", entityData.get(INV_TAG).copy());
         getHomePos().ifPresent(p -> tag.putLong("Home", p.asLong()));
+        tag.putInt("ActionMode", this.getActionMode().ordinal());
+        net.minecraft.core.BlockPos t = this.getMiningTargetPos();
+        if (t != null) {
+            tag.putLong("MiningTarget", t.asLong());
+        }
     }
 
     @Override
@@ -144,6 +160,25 @@ public class Adventurer extends PathfinderMob {
             entityData.set(INV_TAG, tag.getCompound("Inv").copy());
         }
         if (tag.contains("Home")) setHomePos(BlockPos.of(tag.getLong("Home")));
+        if (tag.contains("ActionMode", net.minecraft.nbt.Tag.TAG_INT)) {
+            int i = tag.getInt("ActionMode");
+            int max = net.liopyu.civilization.ai.ActionMode.values().length - 1;
+            if (i < 0) i = 0;
+            if (i > max) i = max;
+            this.setActionMode(net.liopyu.civilization.ai.ActionMode.values()[i]);
+        } else {
+            this.setActionMode(net.liopyu.civilization.ai.ActionMode.IDLE);
+        }
+        if (tag.contains("MiningTarget", net.minecraft.nbt.Tag.TAG_LONG)) {
+            net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.of(tag.getLong("MiningTarget"));
+            if (this.level().isLoaded(pos) && !this.level().getBlockState(pos).isAir()) {
+                this.setMiningTargetPos(pos);
+            } else {
+                this.clearMiningTargetPos();
+            }
+        } else {
+            this.clearMiningTargetPos();
+        }
     }
 
     @Override
@@ -248,7 +283,12 @@ public class Adventurer extends PathfinderMob {
                 .add(Attributes.MAX_HEALTH, 20.0D)
                 .add(Attributes.MOVEMENT_SPEED, 0.30D)
                 .add(Attributes.ARMOR, 2.0D)
-                .add(Attributes.FOLLOW_RANGE, 32.0D);
+                .add(Attributes.FOLLOW_RANGE, 32.0D)
+                .add(Attributes.ENTITY_INTERACTION_RANGE, 5);
+    }
+
+    public double entityInteractionRange() {
+        return this.getAttributeValue(Attributes.ENTITY_INTERACTION_RANGE);
     }
 
     @Override
@@ -270,10 +310,39 @@ public class Adventurer extends PathfinderMob {
         return Mth.clamp(t, 0.0F, 1.0F);
     }
 
+
+    @Override
+    protected Brain.Provider<Adventurer> brainProvider() {
+        return Brain.provider(AdventurerAi.memoryTypes(), AdventurerAi.SENSOR_TYPES);
+    }
+
+    @Override
+    protected Brain<Adventurer> makeBrain(com.mojang.serialization.Dynamic<?> dyn) {
+        Brain<Adventurer> b = this.brainProvider().makeBrain(dyn);
+        AdventurerAi.makeBrain(this, b);
+        this.brain = b;
+        return b;
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    public Brain<Adventurer> getBrain() {
+        return (Brain<Adventurer>) brain;
+    }
+
+    @Override
+    public void customServerAiStep() {
+        super.customServerAiStep();
+        if (!level().isClientSide) {
+            this.getBrain()
+                    .tick((net.minecraft.server.level.ServerLevel) level(), this);
+            net.liopyu.civilization.ai.brain.AdventurerAi.updateActivity(this);
+        }
+    }
+
     @Override
     public void aiStep() {
         super.aiStep();
-
         if (this.swinging) {
             ++this.swingTime;
             if (this.swingTime >= this.getCurrentSwingDuration()) {
@@ -285,16 +354,70 @@ public class Adventurer extends PathfinderMob {
 
     @Override
     protected void registerGoals() {
-        this.goalSelector.addGoal(0, new AutoEquipGoal(this));
+   /*     this.goalSelector.addGoal(0, new AutoEquipGoal(this));
         this.goalSelector.addGoal(1, new MineBlockGoal(this));
-        this.goalSelector.addGoal(2, new SetUpBaseGoal(this, 1.0D, 8));
         this.goalSelector.addGoal(0, new ManageActionsGoal(this));
         this.goalSelector.addGoal(4, new NavigateToNearestTreeGoal(this, 1.1));
         this.goalSelector.addGoal(5, new CutTreeGoal(this, 256));
+        this.goalSelector.addGoal(3, new NavigateToTargetPosGoal(this, 1.12D));*/
+    }
+
+    public void jump() {
+        double jumpPower = this.getJumpPower() + this.getJumpBoostPower();
+        Vec3 currentVelocity = this.getDeltaMovement();
+
+        this.setDeltaMovement(currentVelocity.x, jumpPower, currentVelocity.z);
+        this.hasImpulse = true;
+        if (this.isSprinting()) {
+            float yawRadians = this.getYRot() * 0.017453292F;
+            this.setDeltaMovement(
+                    this.getDeltaMovement().add(
+                            -Math.sin(yawRadians) * 0.2,
+                            0.0,
+                            Math.cos(yawRadians) * 0.2
+                    )
+            );
+        }
+
+        this.hasImpulse = true;
+        CommonHooks.onLivingJump(this);
+    }
+
+    public boolean isJumping() {
+        return this.jumping;
+    }
+
+    public void clearMiningTargetPos() {
+        entityData.set(MINING_TARGET_POS, java.util.Optional.empty());
+        if (!level().isClientSide) {
+            this.getBrain().eraseMemory(AdventurerMemories.MINING_TARGET.get());
+        }
     }
 
 
-    // Simple helper: gentle wandering nudge if stuck (safe to remove)
+    public @Nullable BlockPos getMiningTargetPos() {
+        if (entityData.get(MINING_TARGET_POS).isPresent()) {
+            return entityData.get(MINING_TARGET_POS).get();
+        }
+        return null;
+    }
+
+    public void setMiningTargetPos(BlockPos pos) {
+        if (pos == null) {
+            entityData.set(MINING_TARGET_POS, java.util.Optional.empty());
+            if (!level().isClientSide) {
+                this.getBrain().eraseMemory(AdventurerMemories.MINING_TARGET.get());
+            }
+        } else {
+            BlockPos imm = pos.immutable();
+            entityData.set(MINING_TARGET_POS, java.util.Optional.of(imm));
+            if (!level().isClientSide) {
+                this.getBrain().setMemory(AdventurerMemories.MINING_TARGET.get(), imm);
+            }
+        }
+    }
+
+
     @Override
     public void tick() {
         super.tick();

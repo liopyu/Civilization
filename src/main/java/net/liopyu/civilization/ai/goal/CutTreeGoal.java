@@ -20,11 +20,13 @@ public class CutTreeGoal extends Goal {
     private final HashSet<BlockPos> seen = new HashSet<>();
     private boolean scanning;
     private MineBlockGoal miner;
+    private boolean cleaningUpPillars;
 
     public CutTreeGoal(Adventurer mob, int maxNodes) {
         this.mob = mob; this.maxNodes = Math.max(1, maxNodes);
-        setFlags(EnumSet.of(Flag.LOOK));
+        setFlags(EnumSet.noneOf(Flag.class));
     }
+
 
     @Override
     public boolean canUse() {
@@ -36,46 +38,92 @@ public class CutTreeGoal extends Goal {
         return mob.getActionMode() == ActionMode.CUTTING_TREE;
     }
 
+    private net.minecraft.tags.TagKey<net.minecraft.world.level.block.Block> familyTag;
+
     @Override
     public void start() {
-        marked.clear(); queue.clear(); seen.clear(); scanning = true;
-        for (var g : mob.goalSelector.getAvailableGoals()) {
-            if (g.getGoal() instanceof MineBlockGoal m) {
-                miner = m; break;
+        aiLogger("Start: CutTreeGoal");
+        marked.clear();
+        queue.clear();
+        seen.clear();
+        scanning = true;
+
+        miner = null;
+        for (var wrapped : mob.goalSelector.getAvailableGoals()) {
+            if (wrapped.getGoal() instanceof MineBlockGoal m) {
+                miner = m;
+                break;
             }
         }
         if (miner == null) {
-            mob.setActionMode(ActionMode.IDLE); return;
+            mob.setActionMode(ActionMode.IDLE);
+            return;
         }
 
-        BlockPos log = net.liopyu.civilization.ai.util.AiUtil.findNearestLogAvoidingOthers(mob, 10, 6.0);
+        BlockPos log = findNearestLogAvoidingOthers(mob, 10, 6.0);
+        familyTag = net.liopyu.civilization.ai.util.AiUtil.woodFamilyTag(mob.level().getBlockState(log));
+        if (familyTag == null) {
+            mob.setActionMode(ActionMode.IDLE); return;
+        }
+        final BlockPos base = findTreeBase(mob.level(), log);
+        final int maxLateral = 3;
+
         if (log == null) {
             mob.setActionMode(ActionMode.IDLE); return;
         }
 
-        queue.add(log); seen.add(log);
+
+        mob.setMiningTargetPos(log);
+
+        queue.add(log);
+        seen.add(log);
         while (!queue.isEmpty() && marked.size() < maxNodes) {
             BlockPos p = queue.removeFirst();
             BlockState bs = mob.level().getBlockState(p);
-            if (!(isLog(bs) || isLeaves(bs))) continue;
+            if (!net.liopyu.civilization.ai.util.AiUtil.isSameWoodFamily(bs, familyTag)) continue;
+
             marked.add(p.immutable());
-            for (int dx = -1; dx <= 1; dx++)
-                for (int dy = -1; dy <= 1; dy++)
-                    for (int dz = -1; dz <= 1; dz++) {
-                        if (dx == 0 && dy == 0 && dz == 0) continue;
-                        BlockPos n = p.offset(dx, dy, dz);
-                        if (!seen.contains(n)) {
-                            BlockState b2 = mob.level().getBlockState(n);
-                            if (isLog(b2)) {
-                                seen.add(n); queue.add(n);
-                            }
-                        }
-                    }
+
+            BlockPos[] neighbors = new BlockPos[]{
+                    p.above(), p.below(),
+                    p.north(), p.south(), p.east(), p.west()
+            };
+
+            for (BlockPos n : neighbors) {
+                if (seen.contains(n)) continue;
+                if (base != null) {
+                    int dx = Math.abs(n.getX() - base.getX());
+                    int dz = Math.abs(n.getZ() - base.getZ());
+                    if (dx > maxLateral || dz > maxLateral) continue;
+                }
+                BlockState b2 = mob.level().getBlockState(n);
+                if (net.liopyu.civilization.ai.util.AiUtil.isSameWoodFamily(b2, familyTag)) {
+                    seen.add(n);
+                    queue.add(n);
+                }
+            }
+
+
         }
-        while (!marked.isEmpty()) miner.enqueue(marked.removeFirst());
+
+        for (BlockPos p : marked) {
+            miner.enqueue(p);
+        }
+
+
         scanning = false;
+        cleaningUpPillars = false;
+
     }
 
+    private boolean isTreeCleared() {
+        if (marked.isEmpty()) return false;
+        for (BlockPos p : marked) {
+            BlockState st = mob.level().getBlockState(p);
+            if (isLog(st) && !net.liopyu.civilization.ai.util.AiUtil.isTemporaryPillar(mob, p)) return false;
+        }
+        return true;
+    }
 
     @Override
     public void tick() {
@@ -83,18 +131,47 @@ public class CutTreeGoal extends Goal {
         if (miner == null) {
             mob.setActionMode(ActionMode.IDLE); return;
         }
-        if (isTreeCleared()) {
-            mob.setActionMode(ActionMode.IDLE); return;
-        }
-    }
 
-    private boolean isTreeCleared() {
-        for (BlockPos p : marked) return false;
-        return true;
+        if (!cleaningUpPillars) {
+            if (isTreeCleared()) {
+                java.util.List<net.minecraft.core.BlockPos> pillars = net.liopyu.civilization.ai.util.AiUtil.drainTemporaryPillarsLifo(mob);
+                if (!pillars.isEmpty()) {
+                    for (net.minecraft.core.BlockPos p : pillars) miner.enqueue(p);
+                    cleaningUpPillars = true;
+                    return;
+                }
+                mob.clearMiningTargetPos();
+                net.minecraft.core.BlockPos next = net.liopyu.civilization.ai.util.AiUtil.findNearestLogAvoidingOthers(mob, 24, 6.0);
+                if (next != null) {
+                    mob.setActionMode(net.liopyu.civilization.ai.ActionMode.NAVIGATING_TO_NEAREST_TREE);
+                } else {
+                    mob.setActionMode(net.liopyu.civilization.ai.ActionMode.IDLE);
+                }
+                return;
+            }
+            return;
+        }
+
+        if (cleaningUpPillars) {
+            if (miner.isIdle()) {
+                cleaningUpPillars = false;
+                mob.clearMiningTargetPos();
+                net.minecraft.core.BlockPos next = net.liopyu.civilization.ai.util.AiUtil.findNearestLogAvoidingOthers(mob, 24, 6.0);
+                if (next != null) {
+                    mob.setActionMode(net.liopyu.civilization.ai.ActionMode.NAVIGATING_TO_NEAREST_TREE);
+                } else {
+                    mob.setActionMode(net.liopyu.civilization.ai.ActionMode.IDLE);
+                }
+            }
+        }
     }
 
     @Override
     public void stop() {
+        aiLogger("Stop: CutTreeGoal");
         marked.clear(); queue.clear(); seen.clear(); scanning = false;
+        mob.clearMiningTargetPos();
     }
+
+
 }

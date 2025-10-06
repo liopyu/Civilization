@@ -7,5 +7,6 @@ public enum ActionMode {
     CUTTING_TREE,
     MINING_PICKAXABLE,
     MINING_SHOVELABLE,
-    MINING_ORES
+    MINING_ORES,
+
 }

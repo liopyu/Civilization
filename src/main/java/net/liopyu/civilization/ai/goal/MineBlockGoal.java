@@ -1,5 +1,6 @@
 package net.liopyu.civilization.ai.goal;
 
+import com.mojang.logging.LogUtils;
 import net.liopyu.civilization.ai.ActionMode;
 import net.liopyu.civilization.ai.util.AiUtil;
 import net.liopyu.civilization.entity.Adventurer;
@@ -12,6 +13,8 @@ import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayDeque;
 import java.util.EnumSet;
+
+import static net.liopyu.civilization.ai.util.AiUtil.aiLogger;
 
 public class MineBlockGoal extends Goal {
     private final Adventurer mob;
@@ -32,28 +35,31 @@ public class MineBlockGoal extends Goal {
 
     @Override
     public boolean canUse() {
-        return !mob.level().isClientSide && !queue.isEmpty() && mob.getActionMode() != ActionMode.IDLE;
+        return !mob.level().isClientSide
+                && (current != null || !queue.isEmpty())
+                && mob.getActionMode() != ActionMode.IDLE;
     }
 
     @Override
     public boolean canContinueToUse() {
-        return !queue.isEmpty() && mob.getActionMode() != ActionMode.IDLE;
+        return (current != null || !queue.isEmpty())
+                && mob.getActionMode() != ActionMode.IDLE;
     }
+
 
     public void enqueue(BlockPos p) {
         if (p != null) queue.add(p.immutable());
     }
 
-    public void clearQueue() {
-        queue.clear();
-        endProgress();
-        current = null;
-        breakingTicks = 0;
-        breakingTotal = 0;
+    @Override
+    public void start() {
+        super.start();
+        aiLogger("Start: MineBlockGoal");
     }
 
     @Override
     public void stop() {
+        aiLogger("Stop: MineBlockGoal");
         endProgress();
         swingCooldown = 0;
         current = null;
@@ -66,16 +72,18 @@ public class MineBlockGoal extends Goal {
         if (current == null) {
             while (!queue.isEmpty() && current == null) {
                 BlockPos next = queue.removeFirst();
+                if (mob.getActionMode() == net.liopyu.civilization.ai.ActionMode.CUTTING_TREE
+                        && net.liopyu.civilization.ai.util.AiUtil.isTemporaryPillar(mob, next)) {
+                    continue;
+                }
                 if (mob.isValidWorkPos(next) && !mob.level().getBlockState(next).isAir()) current = next;
             }
+
             if (current == null) {
-                endProgress(); return;
+                endProgress();
+                return;
             }
-            breakingTicks = 0;
-            breakingTotal = computeBreakTimeTicks(mob.getMainHandItem(), mob.level().getBlockState(current), current);
-            if (breakingTotal <= 0) breakingTotal = 1;
-            beginProgress();
-            return;
+            mob.setMiningTargetPos(current);
         }
 
         if (!mob.isValidWorkPos(current)) {
@@ -86,12 +94,87 @@ public class MineBlockGoal extends Goal {
         }
 
         BlockState st = mob.level().getBlockState(current);
+        if (mob.getActionMode() == net.liopyu.civilization.ai.ActionMode.CUTTING_TREE) {
+            boolean isTempPillar = net.liopyu.civilization.ai.util.AiUtil.isTemporaryPillar(mob, current);
+            boolean treeBlock = net.liopyu.civilization.ai.util.AiUtil.isLog(st) || net.liopyu.civilization.ai.util.AiUtil.isLeaves(st);
+            if (!treeBlock && !isTempPillar) {
+                endProgress();
+                current = null;
+                breakingTicks = 0;
+                return;
+            }
+        }
+
+
         if (st.isAir()) {
             endProgress();
             current = null;
             breakingTicks = 0;
+            mob.clearMiningTargetPos();
             return;
         }
+
+        double r = mob.entityInteractionRange();
+        double d2 = mob.distanceToSqr(current.getX() + 0.5, current.getY() + 0.5, current.getZ() + 0.5);
+        if (d2 > r * r) {
+            if (showingProgress) endProgress();
+            int fx = net.minecraft.util.Mth.floor(mob.getX());
+            int fz = net.minecraft.util.Mth.floor(mob.getZ());
+            boolean within3x3 = Math.abs(fx - current.getX()) <= 1 && Math.abs(fz - current.getZ()) <= 1;
+
+            if (current.getY() >= mob.blockPosition().getY() && within3x3) {
+                net.minecraft.world.phys.AABB upBox = mob.getBoundingBox().move(0.0, 1.0, 0.0);
+                boolean clearHeadroom = net.liopyu.civilization.ai.util.AiUtil.isAABBPassableForEntity(mob, upBox);
+                if (!clearHeadroom) {
+                    net.minecraft.core.BlockPos leaf = net.liopyu.civilization.ai.util.AiUtil.firstBlockingInAABB(
+                            mob, upBox, net.liopyu.civilization.ai.util.AiUtil::isLeaves);
+                    if (leaf != null) {
+                        enqueueFront(current);
+                        current = leaf;
+                        breakingTicks = 0;
+                        breakingTotal = 0;
+                        mob.setMiningTargetPos(leaf);
+                        return;
+                    } else {
+                        mob.setMiningTargetPos(current);
+                        return;
+                    }
+                }
+                net.liopyu.civilization.ai.util.AiUtil.pillarUpOneBlock(mob, 2);
+                return;
+            }
+            mob.setMiningTargetPos(current);
+            return;
+        }
+
+
+        if (!hasLineOfSight(current)) {
+            java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> pred =
+                    net.liopyu.civilization.ai.util.AiUtil.obstaclePredicateForMode(mob);
+            BlockPos obstacle = net.liopyu.civilization.ai.util.AiUtil.firstBlockingAlong(mob, current, pred);
+            if (obstacle != null) {
+                if (showingProgress) endProgress();
+                enqueueFront(current);
+                current = obstacle;
+                breakingTicks = 0;
+                breakingTotal = 0;
+                mob.setMiningTargetPos(obstacle);
+                return;
+            } else {
+                if (showingProgress) endProgress();
+                mob.setMiningTargetPos(current);
+                return;
+            }
+        }
+
+
+        if (breakingTotal <= 0) {
+            breakingTicks = 0;
+            breakingTotal = computeBreakTimeTicks(mob.getMainHandItem(), st, current);
+            if (breakingTotal <= 0) breakingTotal = 1;
+        }
+
+        if (!showingProgress) beginProgress();
 
         mob.getLookControl().setLookAt(current.getX() + 0.5, current.getY() + 0.5, current.getZ() + 0.5);
         breakingTicks++;
@@ -104,8 +187,9 @@ public class MineBlockGoal extends Goal {
             }
         }
         int stage = (int) Math.floor((breakingTicks / (double) breakingTotal) * 10.0);
+        if (stage < 0) stage = 0;
+        if (stage > 9) stage = 9;
         tickProgress(stage);
-
 
         if (breakingTicks >= breakingTotal) {
             AiUtil.harvestBlockToInternal(mob, current);
@@ -114,19 +198,48 @@ public class MineBlockGoal extends Goal {
             breakingTicks = 0;
             breakingTotal = 0;
         }
+        // LogUtils.getLogger().info(queue.size() + "");
     }
 
-    private void startProgress(BlockPos current) {
-        if (!(mob.level() instanceof ServerLevel sl)) return;
-        if (current == null) return;
-
-        sl.destroyBlockProgress(mob.getId(), current, 0);
-        lastProgressPos = current.immutable();
-        showingProgress = true;
-
-        // Start swinging immediately and then every ~6–9 ticks
-        swingCooldown = 0;
+    public boolean isIdle() {
+        return current == null && queue.isEmpty();
     }
+
+    private boolean hasLineOfSight(BlockPos pos) {
+        net.minecraft.world.phys.Vec3 eye = mob.getEyePosition(1.0F);
+        double px = pos.getX() + 0.5, py = pos.getY() + 0.5, pz = pos.getZ() + 0.5;
+        double o = 0.3;
+        net.minecraft.world.phys.Vec3[] targets = new net.minecraft.world.phys.Vec3[]{
+                new net.minecraft.world.phys.Vec3(px, py, pz),
+                new net.minecraft.world.phys.Vec3(px + o, py, pz),
+                new net.minecraft.world.phys.Vec3(px - o, py, pz),
+                new net.minecraft.world.phys.Vec3(px, py + o, pz),
+                new net.minecraft.world.phys.Vec3(px, py, pz + o),
+                new net.minecraft.world.phys.Vec3(px, py, pz - o)
+        };
+        java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> pred =
+                net.liopyu.civilization.ai.util.AiUtil.obstaclePredicateForMode(mob);
+        for (net.minecraft.world.phys.Vec3 end : targets) {
+            net.minecraft.world.level.ClipContext ctx = new net.minecraft.world.level.ClipContext(
+                    eye, end,
+                    net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                    net.minecraft.world.level.ClipContext.Fluid.NONE,
+                    mob
+            );
+            net.minecraft.world.phys.HitResult hit = mob.level().clip(ctx);
+            if (hit == null || hit.getType() == net.minecraft.world.phys.HitResult.Type.MISS) return true;
+            if (hit.getType() == net.minecraft.world.phys.HitResult.Type.BLOCK) {
+                net.minecraft.core.BlockPos hp = ((net.minecraft.world.phys.BlockHitResult) hit).getBlockPos();
+                if (hp.equals(pos)) return true;
+                net.minecraft.world.level.block.state.BlockState st = mob.level().getBlockState(hp);
+                if (pred.test(st)) return false;
+                double near = eye.distanceToSqr(net.minecraft.world.phys.Vec3.atCenterOf(hp));
+                if (near < 1.2 * 1.2) continue;
+            }
+        }
+        return false;
+    }
+
 
     private int computeBreakTimeTicks(ItemStack tool, BlockState state, BlockPos pos) {
         float hardness = state.getDestroySpeed(mob.level(), pos);
@@ -168,5 +281,11 @@ public class MineBlockGoal extends Goal {
         }
         lastProgressPos = null;
         showingProgress = false;
+        this.breakingTicks = 0;
     }
+
+    public void enqueueFront(BlockPos p) {
+        if (p != null) queue.addFirst(p.immutable());
+    }
+
 }
