@@ -1,6 +1,7 @@
 package net.liopyu.civilization;
 
 import com.mojang.logging.LogUtils;
+import net.liopyu.civilization.ai.core.ModAdventurerAI;
 import net.liopyu.civilization.registry.ModEntities;
 import net.liopyu.civilization.registry.ModItems;
 import net.liopyu.civilization.registry.ModMenus;
@@ -44,7 +45,7 @@ public class Civilization {
         ModEntities.register(modEventBus);
         ModItems.register(modEventBus);
         ModMenus.register(modEventBus);
-        net.liopyu.civilization.ai.brain.AdventurerMemories.MEMORIES.register(modEventBus);
+        ModAdventurerAI.bootstrap();
     }
 
 }

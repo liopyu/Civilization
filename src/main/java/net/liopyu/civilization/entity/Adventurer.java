@@ -1,9 +1,10 @@
 package net.liopyu.civilization.entity;
 
 
-import net.liopyu.civilization.ai.brain.AdventurerAi;
-import net.liopyu.civilization.ai.brain.AdventurerMemories;
-import net.liopyu.civilization.ai.goal.*;
+import net.liopyu.civilization.ai.core.AdventurerController;
+import net.liopyu.civilization.ai.goal.AdventurerGoalControllerGoal;
+import net.liopyu.civilization.ai.goal.AdventurerSensorsGoal;
+import net.liopyu.civilization.ai.goal.active.*;
 import net.liopyu.civilization.screen.AdventurerMenu;
 import net.liopyu.civilization.util.UsernamePool;
 import net.minecraft.core.BlockPos;
@@ -27,7 +28,6 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.SpawnGroupData;
-import net.minecraft.world.entity.ai.Brain;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
@@ -51,10 +51,35 @@ public class Adventurer extends PathfinderMob {
             SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.COMPOUND_TAG);
     private static final EntityDataAccessor<java.util.Optional<BlockPos>> HOME_POS =
             SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.OPTIONAL_BLOCK_POS);
-    public static final EntityDataAccessor<java.util.Optional<BlockPos>> MINING_TARGET_POS =
-            SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.OPTIONAL_BLOCK_POS);
-    private static final net.minecraft.network.syncher.EntityDataAccessor<Integer> ACTION_MODE =
-            net.minecraft.network.syncher.SynchedEntityData.defineId(Adventurer.class, net.minecraft.network.syncher.EntityDataSerializers.INT);
+    private static final EntityDataAccessor<Integer> MODE =
+            SynchedEntityData.defineId(Adventurer.class, EntityDataSerializers.INT);
+
+    public Adventurer(EntityType<? extends PathfinderMob> type, Level level) {
+        super(type, level);
+        this.setPersistenceRequired();
+        this.getNavigation().setCanFloat(true);
+        if (this.getNavigation() instanceof GroundPathNavigation gpn) {
+            gpn.setCanOpenDoors(true);
+            gpn.setCanPassDoors(true);
+        }
+        controller = new AdventurerController(this);
+    }
+
+    private final AdventurerController controller;
+
+    public AdventurerController controller() {
+        return controller;
+    }
+
+    public net.liopyu.civilization.ai.ActionMode getActionMode() {
+        int o = this.entityData.get(MODE);
+        net.liopyu.civilization.ai.ActionMode[] v = net.liopyu.civilization.ai.ActionMode.values();
+        return o >= 0 && o < v.length ? v[o] : net.liopyu.civilization.ai.ActionMode.IDLE;
+    }
+
+    public void setActionMode(net.liopyu.civilization.ai.ActionMode mode) {
+        this.entityData.set(MODE, mode.ordinal());
+    }
 
     @Override
     protected void defineSynchedData(SynchedEntityData.Builder builder) {
@@ -62,27 +87,7 @@ public class Adventurer extends PathfinderMob {
         builder.define(USERNAME, "");
         builder.define(INV_TAG, new CompoundTag());
         builder.define(HOME_POS, java.util.Optional.empty());
-        builder.define(MINING_TARGET_POS, java.util.Optional.empty());
-        builder.define(ACTION_MODE, net.liopyu.civilization.ai.ActionMode.IDLE.ordinal());
-    }
-
-    public net.liopyu.civilization.ai.ActionMode getActionMode() {
-        int v = this.entityData.get(ACTION_MODE);
-        net.liopyu.civilization.ai.ActionMode[] vals = net.liopyu.civilization.ai.ActionMode.values();
-        if (v < 0 || v >= vals.length) return net.liopyu.civilization.ai.ActionMode.IDLE;
-        return vals[v];
-    }
-
-    public void setActionMode(net.liopyu.civilization.ai.ActionMode m) {
-        this.entityData.set(ACTION_MODE, m.ordinal());
-        if (!level().isClientSide) {
-            var brain = this.getBrain();
-            if (m == net.liopyu.civilization.ai.ActionMode.IDLE) {
-                brain.eraseMemory(net.liopyu.civilization.ai.brain.AdventurerMemories.MODE_ACTIVITY.get());
-            } else {
-                brain.setMemory(net.liopyu.civilization.ai.brain.AdventurerMemories.MODE_ACTIVITY.get(), m);
-            }
-        }
+        builder.define(MODE, net.liopyu.civilization.ai.ActionMode.IDLE.ordinal());
     }
 
     private static final int INV_SIZE = 27;
@@ -145,11 +150,7 @@ public class Adventurer extends PathfinderMob {
         tag.putString("AdventurerName", getUsername());
         tag.put("Inv", entityData.get(INV_TAG).copy());
         getHomePos().ifPresent(p -> tag.putLong("Home", p.asLong()));
-        tag.putInt("ActionMode", this.getActionMode().ordinal());
-        net.minecraft.core.BlockPos t = this.getMiningTargetPos();
-        if (t != null) {
-            tag.putLong("MiningTarget", t.asLong());
-        }
+        tag.putInt("Mode", this.entityData.get(MODE));
     }
 
     @Override
@@ -160,25 +161,7 @@ public class Adventurer extends PathfinderMob {
             entityData.set(INV_TAG, tag.getCompound("Inv").copy());
         }
         if (tag.contains("Home")) setHomePos(BlockPos.of(tag.getLong("Home")));
-        if (tag.contains("ActionMode", net.minecraft.nbt.Tag.TAG_INT)) {
-            int i = tag.getInt("ActionMode");
-            int max = net.liopyu.civilization.ai.ActionMode.values().length - 1;
-            if (i < 0) i = 0;
-            if (i > max) i = max;
-            this.setActionMode(net.liopyu.civilization.ai.ActionMode.values()[i]);
-        } else {
-            this.setActionMode(net.liopyu.civilization.ai.ActionMode.IDLE);
-        }
-        if (tag.contains("MiningTarget", net.minecraft.nbt.Tag.TAG_LONG)) {
-            net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.of(tag.getLong("MiningTarget"));
-            if (this.level().isLoaded(pos) && !this.level().getBlockState(pos).isAir()) {
-                this.setMiningTargetPos(pos);
-            } else {
-                this.clearMiningTargetPos();
-            }
-        } else {
-            this.clearMiningTargetPos();
-        }
+        if (tag.contains("Mode")) this.entityData.set(MODE, tag.getInt("Mode"));
     }
 
     @Override
@@ -267,15 +250,6 @@ public class Adventurer extends PathfinderMob {
         return out;
     }
 
-    public Adventurer(EntityType<? extends PathfinderMob> type, Level level) {
-        super(type, level);
-        this.setPersistenceRequired();
-        this.getNavigation().setCanFloat(true);
-        if (this.getNavigation() instanceof GroundPathNavigation gpn) {
-            gpn.setCanOpenDoors(true);
-            gpn.setCanPassDoors(true);
-        }
-    }
 
     // Base attributes (tweak as needed)
     public static AttributeSupplier.Builder createAttributes() {
@@ -312,35 +286,6 @@ public class Adventurer extends PathfinderMob {
 
 
     @Override
-    protected Brain.Provider<Adventurer> brainProvider() {
-        return Brain.provider(AdventurerAi.memoryTypes(), AdventurerAi.SENSOR_TYPES);
-    }
-
-    @Override
-    protected Brain<Adventurer> makeBrain(com.mojang.serialization.Dynamic<?> dyn) {
-        Brain<Adventurer> b = this.brainProvider().makeBrain(dyn);
-        AdventurerAi.makeBrain(this, b);
-        this.brain = b;
-        return b;
-    }
-
-    @SuppressWarnings("unchecked")
-    @Override
-    public Brain<Adventurer> getBrain() {
-        return (Brain<Adventurer>) brain;
-    }
-
-    @Override
-    public void customServerAiStep() {
-        super.customServerAiStep();
-        if (!level().isClientSide) {
-            this.getBrain()
-                    .tick((net.minecraft.server.level.ServerLevel) level(), this);
-            net.liopyu.civilization.ai.brain.AdventurerAi.updateActivity(this);
-        }
-    }
-
-    @Override
     public void aiStep() {
         super.aiStep();
         if (this.swinging) {
@@ -354,13 +299,19 @@ public class Adventurer extends PathfinderMob {
 
     @Override
     protected void registerGoals() {
-   /*     this.goalSelector.addGoal(0, new AutoEquipGoal(this));
-        this.goalSelector.addGoal(1, new MineBlockGoal(this));
-        this.goalSelector.addGoal(0, new ManageActionsGoal(this));
-        this.goalSelector.addGoal(4, new NavigateToNearestTreeGoal(this, 1.1));
-        this.goalSelector.addGoal(5, new CutTreeGoal(this, 256));
-        this.goalSelector.addGoal(3, new NavigateToTargetPosGoal(this, 1.12D));*/
+        this.goalSelector.addGoal(0, new net.liopyu.civilization.ai.goal.AdventurerSensorsGoal(this));
+        this.goalSelector.addGoal(1, new net.liopyu.civilization.ai.goal.PickupDropsGoal(this));
+        this.goalSelector.addGoal(2, new net.liopyu.civilization.ai.goal.AdventurerGoalControllerGoal(this));
+        this.goalSelector.addGoal(3, new net.liopyu.civilization.ai.goal.active.EatGoal(this));
+        this.goalSelector.addGoal(3, new net.liopyu.civilization.ai.goal.active.SleepGoal(this));
+        this.goalSelector.addGoal(4, new net.liopyu.civilization.ai.goal.active.ReturnHomeGoal(this));
+        this.goalSelector.addGoal(5, new net.liopyu.civilization.ai.goal.active.BuildShelterGoal(this));
+        this.goalSelector.addGoal(6, new net.liopyu.civilization.ai.goal.active.GatherWoodGoal(this));
+        this.goalSelector.addGoal(7, new net.liopyu.civilization.ai.goal.active.MineStoneGoal(this));
+        this.goalSelector.addGoal(8, new net.liopyu.civilization.ai.goal.active.SetHomeGoal(this));
+        this.goalSelector.addGoal(9, new net.liopyu.civilization.ai.goal.active.ExploreGoal(this));
     }
+
 
     public void jump() {
         double jumpPower = this.getJumpPower() + this.getJumpBoostPower();
@@ -387,36 +338,6 @@ public class Adventurer extends PathfinderMob {
         return this.jumping;
     }
 
-    public void clearMiningTargetPos() {
-        entityData.set(MINING_TARGET_POS, java.util.Optional.empty());
-        if (!level().isClientSide) {
-            this.getBrain().eraseMemory(AdventurerMemories.MINING_TARGET.get());
-        }
-    }
-
-
-    public @Nullable BlockPos getMiningTargetPos() {
-        if (entityData.get(MINING_TARGET_POS).isPresent()) {
-            return entityData.get(MINING_TARGET_POS).get();
-        }
-        return null;
-    }
-
-    public void setMiningTargetPos(BlockPos pos) {
-        if (pos == null) {
-            entityData.set(MINING_TARGET_POS, java.util.Optional.empty());
-            if (!level().isClientSide) {
-                this.getBrain().eraseMemory(AdventurerMemories.MINING_TARGET.get());
-            }
-        } else {
-            BlockPos imm = pos.immutable();
-            entityData.set(MINING_TARGET_POS, java.util.Optional.of(imm));
-            if (!level().isClientSide) {
-                this.getBrain().setMemory(AdventurerMemories.MINING_TARGET.get(), imm);
-            }
-        }
-    }
-
 
     @Override
     public void tick() {
@@ -438,6 +359,4 @@ public class Adventurer extends PathfinderMob {
         return this.level().isLoaded(pos) && this.level().isInWorldBounds(pos);
     }
 
-    // When you’re ready to add inventories, tools, or “job” enums,
-    // add SynchedEntityData fields here to network them to clients.
 }

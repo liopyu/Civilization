@@ -1,12 +1,14 @@
 package net.liopyu.civilization.ai;
 
-
 public enum ActionMode {
     IDLE,
-    NAVIGATING_TO_NEAREST_TREE,
-    CUTTING_TREE,
-    MINING_PICKAXABLE,
-    MINING_SHOVELABLE,
-    MINING_ORES,
-
+    GATHER_WOOD,
+    MINE_STONE,
+    BUILD_SHELTER,
+    SET_HOME,
+    EXPLORE,
+    RETURN_HOME,
+    CRAFT,
+    EAT,
+    SLEEP
 }

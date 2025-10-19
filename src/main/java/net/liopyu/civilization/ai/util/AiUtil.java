@@ -1,17 +1,12 @@
 package net.liopyu.civilization.ai.util;
 
 import com.mojang.logging.LogUtils;
+import net.liopyu.civilization.ai.ActionMode;
 import net.liopyu.civilization.entity.Adventurer;
 import net.liopyu.civilization.mixin.BlockBehaviourAccessor;
 import net.minecraft.core.BlockPos;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.TickTask;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.loot.LootParams;
 
@@ -66,7 +61,7 @@ public final class AiUtil {
                             mob.level().getEntitiesOfClass(
                                     net.liopyu.civilization.entity.Adventurer.class,
                                     new net.minecraft.world.phys.AABB(treeBase).inflate(avoidRadius),
-                                    a -> a != mob && a.getActionMode() == net.liopyu.civilization.ai.ActionMode.CUTTING_TREE
+                                    a -> a != mob && a.getActionMode() == ActionMode.GATHER_WOOD
                             );
                     if (!others.isEmpty()) continue;
                     double d = p.distSqr(base);
@@ -192,7 +187,7 @@ public final class AiUtil {
                 markTemporaryPillar(mob, placePos);
             }
         }));
-        
+
         return true;
     }
 
@@ -200,7 +195,7 @@ public final class AiUtil {
     public static java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> obstaclePredicateForMode(net.liopyu.civilization.entity.Adventurer mob) {
         net.liopyu.civilization.ai.ActionMode mode = mob.getActionMode();
         switch (mode) {
-            case CUTTING_TREE:
+            case GATHER_WOOD:
                 return net.liopyu.civilization.ai.util.AiUtil::isLeaves;
             default:
                 return s -> s != null && (s.canBeReplaced() || s.is(net.minecraft.tags.BlockTags.LEAVES) || s.is(net.minecraft.world.level.block.Blocks.COBWEB));
