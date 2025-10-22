@@ -1,10 +1,13 @@
 package net.liopyu.civilization.entity;
 
 
+import net.liopyu.civilization.ai.core.ActionMode;
 import net.liopyu.civilization.ai.core.AdventurerController;
-import net.liopyu.civilization.ai.goal.AdventurerGoalControllerGoal;
-import net.liopyu.civilization.ai.goal.AdventurerSensorsGoal;
-import net.liopyu.civilization.ai.goal.active.*;
+import net.liopyu.civilization.ai.goal.active.BuildShelterGoal;
+import net.liopyu.civilization.ai.goal.active.ExcavationGoal;
+import net.liopyu.civilization.ai.goal.active.PickupDropsGoal;
+import net.liopyu.civilization.ai.goal.active.PillarUpGoal;
+import net.liopyu.civilization.debug.BuildPlanDebug;
 import net.liopyu.civilization.screen.AdventurerMenu;
 import net.liopyu.civilization.util.UsernamePool;
 import net.minecraft.core.BlockPos;
@@ -35,13 +38,13 @@ import net.minecraft.world.entity.ai.util.DefaultRandomPos;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ServerLevelAccessor;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.CommonHooks;
 
 import javax.annotation.Nullable;
-import java.util.Optional;
 import java.util.UUID;
 
 public class Adventurer extends PathfinderMob {
@@ -65,19 +68,25 @@ public class Adventurer extends PathfinderMob {
         controller = new AdventurerController(this);
     }
 
+    private final net.liopyu.civilization.ai.core.ProtectedBlocks protectedBlocks = new net.liopyu.civilization.ai.core.ProtectedBlocks();
+
+    public net.liopyu.civilization.ai.core.ProtectedBlocks protectedBlocks() {
+        return protectedBlocks;
+    }
+
     private final AdventurerController controller;
 
     public AdventurerController controller() {
         return controller;
     }
 
-    public net.liopyu.civilization.ai.ActionMode getActionMode() {
+    public ActionMode getActionMode() {
         int o = this.entityData.get(MODE);
-        net.liopyu.civilization.ai.ActionMode[] v = net.liopyu.civilization.ai.ActionMode.values();
-        return o >= 0 && o < v.length ? v[o] : net.liopyu.civilization.ai.ActionMode.IDLE;
+        ActionMode[] v = ActionMode.values();
+        return o >= 0 && o < v.length ? v[o] : ActionMode.IDLE;
     }
 
-    public void setActionMode(net.liopyu.civilization.ai.ActionMode mode) {
+    public void setActionMode(ActionMode mode) {
         this.entityData.set(MODE, mode.ordinal());
     }
 
@@ -87,7 +96,7 @@ public class Adventurer extends PathfinderMob {
         builder.define(USERNAME, "");
         builder.define(INV_TAG, new CompoundTag());
         builder.define(HOME_POS, java.util.Optional.empty());
-        builder.define(MODE, net.liopyu.civilization.ai.ActionMode.IDLE.ordinal());
+        builder.define(MODE, ActionMode.IDLE.ordinal());
     }
 
     private static final int INV_SIZE = 27;
@@ -151,31 +160,41 @@ public class Adventurer extends PathfinderMob {
         tag.put("Inv", entityData.get(INV_TAG).copy());
         getHomePos().ifPresent(p -> tag.putLong("Home", p.asLong()));
         tag.putInt("Mode", this.entityData.get(MODE));
+
+        CompoundTag ai = new CompoundTag();
+        controller.save(ai);
+        tag.put("AI", ai);
+
+        tag.put("Protected", protectedBlocks.toTag());
     }
 
     @Override
     public void readAdditionalSaveData(CompoundTag tag) {
         super.readAdditionalSaveData(tag);
         if (tag.contains("AdventurerName")) setUsername(tag.getString("AdventurerName"));
-        if (tag.contains("Inv", Tag.TAG_COMPOUND)) {
-            entityData.set(INV_TAG, tag.getCompound("Inv").copy());
-        }
+        if (tag.contains("Inv", Tag.TAG_COMPOUND)) entityData.set(INV_TAG, tag.getCompound("Inv").copy());
         if (tag.contains("Home")) setHomePos(BlockPos.of(tag.getLong("Home")));
         if (tag.contains("Mode")) this.entityData.set(MODE, tag.getInt("Mode"));
+
+        if (tag.contains("AI", Tag.TAG_COMPOUND)) controller.load(tag.getCompound("AI"));
+        if (tag.contains("Protected", Tag.TAG_COMPOUND)) protectedBlocks.fromTag(tag.getCompound("Protected"));
     }
+
 
     @Override
     public InteractionResult mobInteract(Player player, InteractionHand hand) {
+        if (!level().isClientSide && hand == InteractionHand.MAIN_HAND && player.getMainHandItem().is(Items.STICK) && player instanceof ServerPlayer sp) {
+            BuildPlanDebug.preview(sp, this, 200);
+            return InteractionResult.CONSUME;
+        }
         if (!level().isClientSide && player instanceof ServerPlayer sp) {
-            MenuProvider provider = new SimpleMenuProvider(
-                    (id, inv, p) -> new AdventurerMenu(id, inv, this),
-                    Component.literal("Adventurer")
-            );
+            MenuProvider provider = new SimpleMenuProvider((id, inv, p) -> new AdventurerMenu(id, inv, this), Component.literal("Adventurer"));
             sp.openMenu(provider);
             return InteractionResult.CONSUME;
         }
         return InteractionResult.sidedSuccess(level().isClientSide);
     }
+
 
     private int countLogs() {
         int c = 0;
@@ -299,15 +318,19 @@ public class Adventurer extends PathfinderMob {
 
     @Override
     protected void registerGoals() {
+
         this.goalSelector.addGoal(0, new net.liopyu.civilization.ai.goal.AdventurerSensorsGoal(this));
-        this.goalSelector.addGoal(1, new net.liopyu.civilization.ai.goal.PickupDropsGoal(this));
+        this.goalSelector.addGoal(1, new PickupDropsGoal(this));
         this.goalSelector.addGoal(2, new net.liopyu.civilization.ai.goal.AdventurerGoalControllerGoal(this));
         this.goalSelector.addGoal(3, new net.liopyu.civilization.ai.goal.active.EatGoal(this));
         this.goalSelector.addGoal(3, new net.liopyu.civilization.ai.goal.active.SleepGoal(this));
+        this.goalSelector.addGoal(3, new net.liopyu.civilization.ai.nav.UniversalReachGoal(this));
         this.goalSelector.addGoal(4, new net.liopyu.civilization.ai.goal.active.ReturnHomeGoal(this));
-        this.goalSelector.addGoal(5, new net.liopyu.civilization.ai.goal.active.BuildShelterGoal(this));
+        this.goalSelector.addGoal(4, new PillarUpGoal(this));
+        this.goalSelector.addGoal(5, new ExcavationGoal(this));
+        this.goalSelector.addGoal(6, new BuildShelterGoal(this));
         this.goalSelector.addGoal(6, new net.liopyu.civilization.ai.goal.active.GatherWoodGoal(this));
-        this.goalSelector.addGoal(7, new net.liopyu.civilization.ai.goal.active.MineStoneGoal(this));
+        this.goalSelector.addGoal(7, new net.liopyu.civilization.ai.goal.active.GatherMineableGoal(this));
         this.goalSelector.addGoal(8, new net.liopyu.civilization.ai.goal.active.SetHomeGoal(this));
         this.goalSelector.addGoal(9, new net.liopyu.civilization.ai.goal.active.ExploreGoal(this));
     }

@@ -1,10 +1,12 @@
 package net.liopyu.civilization.ai.goal.active;
 
-import net.liopyu.civilization.ai.ActionMode;
+import com.mojang.logging.LogUtils;
+import net.liopyu.civilization.ai.core.ActionMode;
 import net.liopyu.civilization.ai.goal.ModeScopedGoal;
 import net.liopyu.civilization.entity.Adventurer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -67,13 +69,17 @@ public final class SetHomeGoal extends ModeScopedGoal {
             target = null;
             return;
         }
+        double reach = adv.entityInteractionRange() + 1.25;
+        if (!net.liopyu.civilization.ai.nav.UniversalReach.reach(adv, target, reach,
+                0, 600, 20 * 8)) return;
 
         if (dwellTicks == 0) dwellTicks = 20;
         else {
             dwellTicks--;
             if (dwellTicks <= 0) {
+                LogUtils.getLogger().info("Setting home pos to: " + target.toString());
                 adv.setHomePos(target);
-                adv.playSound(SoundEvents.NOTE_BLOCK_PLING.value(), 0.6f, 1.2f);
+                adv.level().playSound(null, adv.blockPosition(), SoundEvents.NOTE_BLOCK_PLING.value(), SoundSource.NEUTRAL, 0.6f, 1.2f);
                 adv.controller().requestMode(ActionMode.RETURN_HOME, 800, 80, 20);
             }
         }

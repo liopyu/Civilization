@@ -1,27 +1,31 @@
 package net.liopyu.civilization.ai.goal.active;
 
-import net.liopyu.civilization.ai.ActionMode;
+import com.mojang.logging.LogUtils;
+import net.liopyu.civilization.ai.core.AdventurerController;
+import org.slf4j.Logger;
+import net.liopyu.civilization.ai.core.ActionMode;
 import net.liopyu.civilization.ai.goal.ModeScopedGoal;
 import net.liopyu.civilization.entity.Adventurer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.AABB;
 
 import java.util.EnumSet;
 
 public final class GatherWoodGoal extends ModeScopedGoal {
+    private static final Logger LOG = LogUtils.getLogger();
+
     private BlockPos target;
     private int mineTicks;
     private int repathCooldown;
     private int searchCooldown;
     private java.util.Set<BlockPos> cluster;
     private int clusterCooldown;
+
+    // NEW: avoid instant re-queue of pillar after a dismantle/no-op
+    private int pillarRetryCd = 0;
 
     public GatherWoodGoal(Adventurer a) {
         super(a, ActionMode.GATHER_WOOD);
@@ -35,7 +39,9 @@ public final class GatherWoodGoal extends ModeScopedGoal {
         repathCooldown = 0;
         searchCooldown = 0;
         clusterCooldown = 0;
+        pillarRetryCd = 0;
         cluster = new java.util.HashSet<>();
+        LOG.info("[Wood] {} enter", adv.getStringUUID());
     }
 
     @Override
@@ -44,49 +50,73 @@ public final class GatherWoodGoal extends ModeScopedGoal {
         target = null;
         mineTicks = 0;
         cluster = null;
+        LOG.info("[Wood] {} exit", adv.getStringUUID());
     }
 
     @Override
     public void tick() {
-        if ((target == null || !isLog(adv.level(), target))) {
+        if (pillarRetryCd > 0) pillarRetryCd--;
+
+        // Acquire/refresh a log target from the cluster
+        if (target == null || !isLog(adv.level(), target, adv)) {
             if ((cluster == null || cluster.isEmpty()) && searchCooldown <= 0) {
                 BlockPos start = findNearestLog(adv, 12);
                 searchCooldown = 20;
                 if (start != null) {
+                    LOG.info("[Wood] {} seed log {}", adv.getStringUUID(), start);
                     buildCluster(adv.level(), start, 96, 6);
+                    LOG.info("[Wood] {} cluster size {}", adv.getStringUUID(), cluster.size());
                     target = pickNextFromCluster();
+                    if (target != null && adv.tickCount % 20 == 0)
+                        LOG.info("[Wood] {} next {}", adv.getStringUUID(), target);
+                } else if (adv.tickCount % 40 == 0) {
+                    LOG.info("[Wood] {} no logs nearby", adv.getStringUUID());
                 }
             } else if (cluster != null && !cluster.isEmpty()) {
                 if (clusterCooldown <= 0) {
+                    int before = cluster.size();
                     pruneCluster();
+                    int after = cluster.size();
+                    if (after != before) LOG.info("[Wood] {} pruned {} -> {}", adv.getStringUUID(), before, after);
                     clusterCooldown = 10;
                 } else clusterCooldown--;
                 target = pickNextFromCluster();
+                if (target != null && adv.tickCount % 40 == 0)
+                    LOG.info("[Wood] {} continuing {}", adv.getStringUUID(), target);
             }
+
             if (target == null) {
-                if (adv.tickCount % 60 == 0) adv.controller().requestMode(ActionMode.EXPLORE, 200, 80, 20);
+                if (adv.tickCount % 60 == 0) {
+                    LOG.info("[Wood] {} no target, exploring", adv.getStringUUID());
+                    adv.controller().requestMode(ActionMode.EXPLORE, 200, 80, 20);
+                }
                 return;
             }
         }
 
-        double r = adv.entityInteractionRange() + 1.25;
-        double cx = target.getX() + 0.5, cy = target.getY() + 0.5, cz = target.getZ() + 0.5;
-        double d2 = adv.distanceToSqr(cx, cy, cz);
-
-        if (d2 > r * r) {
-            if (repathCooldown <= 0) {
-                adv.getNavigation().moveTo(cx, cy, cz, 1.1);
-                repathCooldown = 10;
-            } else repathCooldown--;
-            mineTicks = 0;
-            return;
+        // Walk / adapt terrain entirely via UniversalReach
+        double reach = adv.entityInteractionRange() + 1.25;
+        boolean inReach = net.liopyu.civilization.ai.nav.UniversalReach.reach(
+                adv,
+                target,
+                reach,
+                // Wood gathering may need all tools:
+                net.liopyu.civilization.ai.nav.NavTask.ALLOW_PILLAR
+                        | net.liopyu.civilization.ai.nav.NavTask.ALLOW_TUNNEL
+                        | net.liopyu.civilization.ai.nav.NavTask.ALLOW_STAIRS,
+                980,
+                20 * 12
+        );
+        if (!inReach) {
+            mineTicks = 0; return;
         }
 
-        adv.getNavigation().stop();
-        adv.getLookControl().setLookAt(cx, cy, cz);
+        // Face the target and chop
+        adv.getLookControl().setLookAt(target.getX() + 0.5, target.getY() + 0.5, target.getZ() + 0.5);
 
-        if (!isLog(adv.level(), target)) {
+        if (!isLog(adv.level(), target, adv)) {
             if (cluster != null) cluster.remove(target);
+            LOG.info("[Wood] {} target gone {}", adv.getStringUUID(), target);
             target = null;
             mineTicks = 0;
             return;
@@ -94,6 +124,7 @@ public final class GatherWoodGoal extends ModeScopedGoal {
 
         if (adv.tickCount % 6 == 0) adv.swing(InteractionHand.MAIN_HAND);
         mineTicks++;
+        if (mineTicks == 1) LOG.info("[Wood] {} start chop {}", adv.getStringUUID(), target);
 
         if (mineTicks >= 30) {
             Level lvl = adv.level();
@@ -102,12 +133,26 @@ public final class GatherWoodGoal extends ModeScopedGoal {
             if (lvl.getBlockState(p).is(BlockTags.LOGS)) {
                 lvl.destroyBlock(p, true, adv);
                 if (cluster != null) cluster.remove(p);
-                adv.controller().requestPickup(net.liopyu.civilization.ai.core.PickupRequest.any(adv.tickCount, 60, 8).withNear(p));
+                adv.controller().requestPickup(
+                        net.liopyu.civilization.ai.core.PickupRequest.any(adv.tickCount, 60, 8).withNear(p));
+                LOG.info("[Wood] {} chopped {}", adv.getStringUUID(), p);
+            } else {
+                LOG.info("[Wood] {} skip chop invalid {}", adv.getStringUUID(), p);
             }
-            target = cluster != null && !cluster.isEmpty() ? pickNextFromCluster() : null;
-            if (target == null) searchCooldown = 0;
+
+            target = (cluster != null && !cluster.isEmpty()) ? pickNextFromCluster() : null;
+            if (target == null) {
+                searchCooldown = 0;
+                LOG.info("[Wood] {} cluster exhausted", adv.getStringUUID());
+            }
+        }
+
+        if (adv.tickCount % 80 == 0) {
+            int c = (cluster == null) ? 0 : cluster.size();
+            LOG.info("[Wood] {} heartbeat target={} cluster={}", adv.getStringUUID(), target, c);
         }
     }
+
 
     private void buildCluster(Level lvl, BlockPos start, int max, int radius) {
         cluster.clear();
@@ -136,7 +181,7 @@ public final class GatherWoodGoal extends ModeScopedGoal {
         java.util.Iterator<BlockPos> it = cluster.iterator();
         while (it.hasNext()) {
             BlockPos p = it.next();
-            if (!isLog(adv.level(), p)) it.remove();
+            if (!isLog(adv.level(), p, adv)) it.remove();
         }
     }
 
@@ -154,9 +199,8 @@ public final class GatherWoodGoal extends ModeScopedGoal {
         return best == null ? null : best.immutable();
     }
 
-
-    private static boolean isLog(Level level, BlockPos pos) {
-        return level.isLoaded(pos) && level.getBlockState(pos).is(BlockTags.LOGS);
+    private static boolean isLog(Level level, BlockPos pos, Adventurer a) {
+        return level.isLoaded(pos) && !a.protectedBlocks().isProtected(pos) && level.getBlockState(pos).is(BlockTags.LOGS);
     }
 
     private static BlockPos findNearestLog(Adventurer a, int radius) {

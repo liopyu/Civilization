@@ -1,9 +1,11 @@
-package net.liopyu.civilization.ai;
+package net.liopyu.civilization.ai.core;
 
 public enum ActionMode {
     IDLE,
     GATHER_WOOD,
-    MINE_STONE,
+    GATHER_MINEABLE,
+    EXCAVATE,
+    PILLAR_UP,
     BUILD_SHELTER,
     SET_HOME,
     EXPLORE,

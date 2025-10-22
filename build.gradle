@@ -28,9 +28,9 @@ neoForge {
         minecraftVersion = project.parchment_minecraft_version
     }
 
-    /*   accessTransformers {
-           publish(project.file('src/main/resources/META-INF/accesstransformer.cfg'))
-       }*/
+    accessTransformers {
+        publish(project.file('src/main/resources/META-INF/accesstransformer.cfg'))
+    }
 
     // Default run configurations.
     // These can be tweaked, removed, or duplicated as needed.

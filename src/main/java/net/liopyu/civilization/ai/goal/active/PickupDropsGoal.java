@@ -1,4 +1,4 @@
-package net.liopyu.civilization.ai.goal;
+package net.liopyu.civilization.ai.goal.active;
 
 import net.liopyu.civilization.ai.core.PickupRequest;
 import net.liopyu.civilization.entity.Adventurer;
@@ -57,9 +57,9 @@ public final class PickupDropsGoal extends Goal {
     public void tick() {
         PickupRequest r = adv.controller().getPickupRequest();
         if (r == null) {
-            target = null;
-            return;
+            target = null; return;
         }
+
         if (target == null || !isValidTarget(r, target)) {
             target = findBestTarget(r);
             if (target == null) {
@@ -67,22 +67,21 @@ public final class PickupDropsGoal extends Goal {
                 return;
             }
         }
-        double tx = target.getX();
-        double ty = target.getY();
-        double tz = target.getZ();
-        double rr = adv.entityInteractionRange() + 1.0;
-        double d2 = adv.distanceToSqr(tx, ty, tz);
 
-        if (d2 > rr * rr) {
-            if (repathCooldown <= 0 || adv.getNavigation().isDone()) {
-                adv.getNavigation().moveTo(tx, ty, tz, 1.1);
-                repathCooldown = 6;
-            } else repathCooldown--;
-            adv.getLookControl().setLookAt(tx, ty, tz);
-            return;
-        }
+        // Approach the item using UniversalReach (no terrain editing needed).
+        double reach = adv.entityInteractionRange() + 1.0;
+        boolean inReach = net.liopyu.civilization.ai.nav.UniversalReach.reach(
+                adv,
+                target.blockPosition(),
+                reach,
+                0,          // do not modify terrain for simple pickups
+                700,
+                20 * 6
+        );
+        if (!inReach) return;
 
-        adv.getNavigation().stop();
+        // Pick up
+        adv.getLookControl().setLookAt(target.getX(), target.getY(), target.getZ());
         ItemStack s = target.getItem();
         if (!s.isEmpty()) {
             if (adv.addItemToInternal(s)) target.discard();
@@ -91,6 +90,7 @@ public final class PickupDropsGoal extends Goal {
         target = null;
         if (findBestTarget(r) == null) adv.controller().clearPickup();
     }
+
 
     private ItemEntity findBestTarget(PickupRequest r) {
         double rad = Math.max(2.0, r.radius);

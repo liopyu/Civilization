@@ -1,7 +1,7 @@
 package net.liopyu.civilization.ai.util;
 
 import com.mojang.logging.LogUtils;
-import net.liopyu.civilization.ai.ActionMode;
+import net.liopyu.civilization.ai.core.ActionMode;
 import net.liopyu.civilization.entity.Adventurer;
 import net.liopyu.civilization.mixin.BlockBehaviourAccessor;
 import net.minecraft.core.BlockPos;
@@ -157,34 +157,67 @@ public final class AiUtil {
         return net.minecraft.world.item.ItemStack.EMPTY;
     }
 
-    public static boolean pillarUpOneBlock(net.liopyu.civilization.entity.Adventurer mob, int delayTicks) {
+    public static boolean pillarUpOneBlock(Adventurer mob, int delayTicks) {
         if (!(mob.level() instanceof net.minecraft.server.level.ServerLevel sl)) return false;
         if (!mob.onGround()) return false;
         if (!peekHasPlaceableBlock(mob)) return false;
+
+        // 1) Check headroom one block above the *current* position
+        // Slightly shrink to avoid false positives on edges.
+        net.minecraft.world.phys.AABB nextBox = mob.getBoundingBox()
+                .move(0.0, 1.0, 0.0)
+                .inflate(-0.05, -0.001, -0.05);
+
+        if (!isAABBPassableForEntity(mob, nextBox)) {
+            // Try to clear only “soft” obstacles (leaves/etc.) appropriate for current mode
+            var predicate = obstaclePredicateForMode(mob);
+            net.minecraft.core.BlockPos blocker = firstBlockingInAABB(mob, nextBox, predicate);
+            if (blocker != null) {
+                // Gently harvest and stash (uses loot, respects replaceables)
+                boolean ok = harvestBlockToInternal(mob, blocker);
+                aiLogger("[Pillar] " + mob.getStringUUID() + " clearing head blocker at " + blocker + " ok=" + ok);
+                return true; // we did something useful; try again next tick
+            }
+            // It's something solid we won’t auto-clear: bail out (caller can decide to excavate or cancel)
+            aiLogger("[Pillar] " + mob.getStringUUID() + " headroom blocked by solid at " + blocker + " — abort step");
+            return false;
+        }
+
+        // 2) We have headroom: jump now, place underneath after a short delay
         net.minecraft.core.BlockPos placePos = mob.blockPosition();
+        if (mob.protectedBlocks().isProtected(placePos)) return false;
         mob.getNavigation().stop();
         mob.getJumpControl().jump();
+
         net.minecraft.server.MinecraftServer server = sl.getServer();
         int when = server.getTickCount() + Math.max(1, delayTicks);
         server.tell(new net.minecraft.server.TickTask(when, () -> {
             if (mob.isRemoved()) return;
             if (!sl.isLoaded(placePos)) return;
-            net.minecraft.world.level.block.state.BlockState cur = sl.getBlockState(placePos);
-            if (!cur.isAir()) {
-                if (!cur.canBeReplaced()) {
-                    if (cur.getCollisionShape(sl, placePos).isEmpty()) {
-                        harvestBlockToInternal(mob, placePos);
-                    } else {
-                        return;
-                    }
+            if (mob.protectedBlocks().isProtected(placePos)) return;
+            var cur = sl.getBlockState(placePos);
+            if (!cur.isAir() && !cur.canBeReplaced()) {
+                if (mob.protectedBlocks().isProtected(placePos)) return;
+                if (cur.getCollisionShape(sl, placePos).isEmpty()) {
+                    harvestBlockToInternal(mob, placePos);
+                } else {
+                    aiLogger("[Pillar] " + mob.getStringUUID() + " cannot place at " + placePos + " (solid present)");
+                    return;
                 }
             }
-            net.minecraft.world.item.ItemStack stack = takePlaceableBlock(mob);
-            if (stack.isEmpty()) return;
+
+            var stack = takePlaceableBlock(mob);
+            if (stack.isEmpty()) {
+                aiLogger("[Pillar] " + mob.getStringUUID() + " no block to place");
+                return;
+            }
             if (!(stack.getItem() instanceof net.minecraft.world.item.BlockItem bi)) return;
-            net.minecraft.world.level.block.state.BlockState state = bi.getBlock().defaultBlockState();
+
+            var state = bi.getBlock().defaultBlockState();
             if (sl.setBlock(placePos, state, 3)) {
                 markTemporaryPillar(mob, placePos);
+                mob.protectedBlocks().protect(placePos);
+                aiLogger("[Pillar] " + mob.getStringUUID() + " placed step at " + placePos);
             }
         }));
 
@@ -193,7 +226,7 @@ public final class AiUtil {
 
 
     public static java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> obstaclePredicateForMode(net.liopyu.civilization.entity.Adventurer mob) {
-        net.liopyu.civilization.ai.ActionMode mode = mob.getActionMode();
+        ActionMode mode = mob.getActionMode();
         switch (mode) {
             case GATHER_WOOD:
                 return net.liopyu.civilization.ai.util.AiUtil::isLeaves;

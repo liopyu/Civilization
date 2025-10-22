@@ -1,6 +1,6 @@
 package net.liopyu.civilization.ai.goal.active;
 
-import net.liopyu.civilization.ai.ActionMode;
+import net.liopyu.civilization.ai.core.ActionMode;
 import net.liopyu.civilization.ai.goal.ModeScopedGoal;
 import net.liopyu.civilization.entity.Adventurer;
 import net.minecraft.core.BlockPos;
@@ -42,26 +42,29 @@ public final class SleepGoal extends ModeScopedGoal {
             adv.controller().requestMode(ActionMode.SET_HOME, 700, 100, 20);
             return;
         }
+        // Track updates to the stored home position
         if (home == null || !home.equals(adv.getHomePos().orElse(null))) {
             home = adv.getHomePos().orElse(null);
-            repathCooldown = 0;
         }
         if (home == null) return;
 
-        double rx = home.getX() + 0.5;
-        double ry = home.getY() + 0.5;
-        double rz = home.getZ() + 0.5;
-        double r = adv.entityInteractionRange() + 1.5;
-        double d2 = adv.distanceToSqr(rx, ry, rz);
+        final double rx = home.getX() + 0.5;
+        final double ry = home.getY() + 0.5;
+        final double rz = home.getZ() + 0.5;
 
-        if (d2 > r * r) {
-            if (repathCooldown <= 0 || adv.getNavigation().isDone()) {
-                adv.getNavigation().moveTo(rx, ry, rz, 1.1);
-                repathCooldown = 10;
-            } else repathCooldown--;
-            return;
+        // Approach using UniversalReach. No terrain edits needed.
+        double reach = adv.entityInteractionRange() + 1.5;
+        if (!net.liopyu.civilization.ai.nav.UniversalReach.reach(
+                adv,
+                home,
+                reach,
+                0,                // no pillar/tunnel/stairs to get into bed spot
+                600,
+                20 * 12)) {
+            return; // still traveling / adapting
         }
 
+        // In reach: look, play start sound once, then "sleep" (heal over time)
         adv.getNavigation().stop();
         adv.getLookControl().setLookAt(rx, ry, rz);
 
@@ -76,4 +79,5 @@ public final class SleepGoal extends ModeScopedGoal {
             adv.controller().requestMode(ActionMode.EXPLORE, 500, 100, 0);
         }
     }
+
 }

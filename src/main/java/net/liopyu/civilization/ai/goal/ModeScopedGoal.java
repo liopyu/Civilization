@@ -1,6 +1,6 @@
 package net.liopyu.civilization.ai.goal;
 
-import net.liopyu.civilization.ai.ActionMode;
+import net.liopyu.civilization.ai.core.ActionMode;
 import net.liopyu.civilization.entity.Adventurer;
 import net.minecraft.world.entity.ai.goal.Goal;
 
